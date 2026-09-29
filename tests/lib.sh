@@ -109,18 +109,25 @@ ro.product.model) echo "${MOCK_MODEL:-PKU110}" ;;
 *) echo "" ;;
 esac
 EOF
-	# setsid does not exist on the build host; keep the watchdog logic intact
-	# by simply running the command in the background.
+	# setsid does not exist in a minimal container; the probe calls it as
+	# `setsid sh -c "..."`, so the stub just replaces the process image with the
+	# command it was given. (Dropping the first argument here would turn
+	# `setsid sh -c SCRIPT` into `exec -c SCRIPT`, which is not the same thing.)
 	cat >"$STUB_BIN/setsid" <<'EOF'
 #!/bin/sh
-shift
 exec "$@"
 EOF
-	# sleep must not slow the suite down.
-	cat >"$STUB_BIN/sleep" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
+
+	# The hold timings are shortened so the suite stays fast, but the watchdog
+	# delay must stay LONG relative to the run, because the watchdog is supposed
+	# to fire only if the probe dies without disarming it. Stubbing `sleep` to
+	# return instantly would make the watchdog clear the node while the probe is
+	# still mid-test -- and then the test would be asserting against a state the
+	# product code never produced.
+	export DDRC_HOLD_SEC=0
+	export DDRC_NOOP_HOLD_SEC=0
+	export DDRC_WD_SEC=120
+
 	chmod +x "$STUB_BIN"/*
 	export PATH="$STUB_BIN:$PATH"
 }
@@ -196,13 +203,23 @@ arm_expected_status() {
 
 # ------------------------------------------------------------------ DT mock
 
+# oct_escape <0-255> : the three-digit octal escape for one byte, as text.
+oct_escape() {
+	printf '\\%03o' "$1"
+}
+
 # be32 <decimal>... : emit big-endian u32 cells for the given values.
+#
+# This deliberately avoids awk's `printf "%c"`. Under a UTF-8 locale that
+# writes the *character* U+00xx encoded as UTF-8 (two bytes for anything above
+# 0x7f), which silently corrupts the fixture. Shell `printf '%b'` with octal
+# escapes produces raw bytes regardless of locale or which awk is installed,
+# and mawk -- the default on many runners -- handles "%c" differently again.
 be32() {
 	for v in "$@"; do
-		awk -v n="$v" 'BEGIN {
-			if (n < 0) n += 4294967296
-			printf "%c%c%c%c", int(n/16777216)%256, int(n/65536)%256, int(n/256)%256, n%256
-		}'
+		n=$((v % 4294967296))
+		[ "$n" -lt 0 ] && n=$((n + 4294967296))
+		printf '%b' "$(oct_escape $(((n / 16777216) % 256)))$(oct_escape $(((n / 65536) % 256)))$(oct_escape $(((n / 256) % 256)))$(oct_escape $((n % 256)))"
 	done
 }
 

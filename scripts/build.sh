@@ -45,20 +45,74 @@ done < <(find "$stage" -type f | sort)
 find "$stage" -name '*.sh' -exec chmod 755 {} +
 chmod 644 "$stage/module.prop" "$stage/config.conf" "$stage/skip_mount"
 
+# Pin every entry's timestamp. ZIP records an MS-DOS mtime, so without this the
+# archive bytes -- and therefore the published SHA256 -- would change on every
+# build even when no file content changed.
+find "$stage" -exec touch -t 202601010000 {} +
+
 rm -f "$zip_path"
 
-# bsdtar (shipped with Windows) can write ZIP archives; Git Bash has no zip(1).
-# Entries must be stored by bare name: a leading "./" makes the KernelSU /
-# ReSukiSU installer fail with "specified file not found in archive".
-tar_bin=/c/Windows/System32/tar.exe
-[ -x "$tar_bin" ] || tar_bin="$(command -v tar)"
+# Produce a real ZIP archive. The KernelSU / ReSukiSU installer reads ZIP
+# central-directory metadata, so a uStar tar with a .zip name is not good
+# enough -- and GNU tar produces exactly that even when passed -a, because -a
+# keys off the file suffix only for the bsdtar shipped with Windows.
+#
+# Entries must be stored by bare name: a leading "./" makes the installer fail
+# with "specified file not found in archive".
+make_zip() {
+	if command -v zip >/dev/null 2>&1; then
+		# Info-ZIP (Linux, and macOS in most setups). -X drops extra file
+		# attributes, -q keeps the log quiet.
+		# shellcheck disable=SC2046
+		(cd "$stage" && zip -q -X -r "$archive_path" $(ls -1))
+		return $?
+	fi
 
-# shellcheck disable=SC2046  # the staged file names must be word-split into argv
-(cd "$stage" && "$tar_bin" -a -c -f "$(cygpath -w "$zip_path")" $(ls -1))
+	# No zip(1): fall back to the bsdtar shipped with Windows. It writes a real
+	# ZIP, but a different one -- the writer identity is part of the bytes, so
+	# the resulting hash will not match the artifact CI rebuilds.
+	echo "NOTE: zip(1) not found; using tar. The archive will work but its" >&2
+	echo "      bytes will differ from the artifact committed by CI." >&2
+
+	local_tar=/c/Windows/System32/tar.exe
+	[ -x "$local_tar" ] || local_tar="$(command -v tar)"
+	# shellcheck disable=SC2046
+	(cd "$stage" && "$local_tar" -a -c -f "$archive_path" $(ls -1))
+}
+
+# cygpath only exists under MSYS/Cygwin. On a POSIX host the path is already
+# usable, and a MSYS-style /c/... path would be rejected by a native tool.
+if command -v cygpath >/dev/null 2>&1; then
+	archive_path="$(cygpath -w "$zip_path")"
+else
+	archive_path="$zip_path"
+fi
+
+make_zip || {
+	echo "FAIL: could not create the archive" >&2
+	exit 1
+}
+
+# Verify the artifact really is a ZIP before publishing it. This is what makes
+# the check portable: it fails loudly on a host whose tar silently produced a
+# uStar archive instead of a ZIP.
+magic="$(od -An -tx1 -N4 "$zip_path" 2>/dev/null | tr -d ' \n')"
+if [ "$magic" != "504b0304" ]; then
+	echo "FAIL: $zip_path is not a ZIP archive (magic bytes: $magic)" >&2
+	exit 1
+fi
 
 echo "built: dist/$name.zip"
 echo "contents:"
 (cd "$stage" && ls -1)
 
-sha256sum "$zip_path" | awk -v n="$name.zip" '{print $1 "  " n}' >"$dist/SHA256SUMS"
-cat "$dist/SHA256SUMS"
+# Record the hash of the bare file name, as it is published. The entry is
+# checked from inside dist/ because that is where the file actually sits.
+(
+	cd "$dist"
+	sha256sum "$name.zip" | awk -v n="$name.zip" '{print $1 "  " n}' >SHA256SUMS
+	cat SHA256SUMS
+)
+
+echo "NOTE: SHA256SUMS describes the artifact this script just produced."
+echo "      Rebuilds on a host with a different zip(1) may differ in bytes."

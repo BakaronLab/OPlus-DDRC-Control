@@ -145,7 +145,7 @@ OPlus DDRC 会依据以下因素调整低电量阈值：
 
 ### 安装步骤
 
-1. 从本仓库的 [dist/](dist/) 取得 `OPlus-DDRC-Control-v0.1.0-alpha.zip`，并核对 `dist/SHA256SUMS`
+1. 从本仓库的 [dist/](dist/) 取得 `OPlus-DDRC-Control-v0.1.1-alpha.zip`，并核对 `dist/SHA256SUMS`
 2. 在 KernelSU / ReSukiSU Manager 中选择「安装模块」并选择该 ZIP
 3. 安装期间按提示选择档位
 
@@ -616,6 +616,11 @@ bash scripts/build.sh
 
 ZIP 的根目录直接包含模块文件（`module.prop`、`customize.sh` …），没有多余的目录层级——这是 KernelSU 安装器要求的格式。
 
+两条关于构建的说明：
+
+- 构建**优先使用 Info-ZIP `zip(1)`**。若宿主只有 `tar`，脚本会警告：Windows 自带的 bsdtar 也能写出真正的 ZIP，但字节与 CI 产出的不同，因此哈希不会一致。写出后脚本会校验归档的前 4 字节必须是 ZIP magic（`50 4b 03 04`），否则直接失败——GNU tar 在 Linux 上会把 `.zip` 写成 uStar 归档，这个检查就是为了拦下这种情况。
+- 所有条目的时间戳被**固定为同一个值**，因此归档字节只由模块内容决定。同样的源码在同一类宿主上重复构建会得到相同的 SHA256。
+
 ### 回归测试
 
 ```sh
@@ -629,7 +634,9 @@ bash tests/run-all.sh
 - balanced 与 full 各自独立通过 live DT 门禁；pair 不存在时回落 STOCK，**不会**从 full 降级到 balanced
 - 模块绝不清理无法证明属于自己所有权的 force
 
-「零写入」是通过对整个 mock 目录树做指纹比对来断言的，不是只比对那两个节点。
+「零写入」是通过对整个 mock 目录树做指纹比对来断言的，不是只比对那两个节点。指纹包含内容、mtime 和 inode，因此「把一个本来就是 `0` 的节点再写成 `0`」这种内容不变的越权写入同样会被判为失败。
+
+测试本身也做过**反向验证**：把 v0.1.0-alpha 的缺陷 `restore()` 临时放回去，相关断言确实 FAIL 并指出外部 owner 被清除。也就是说这些测试不是「永远通过」的。详见 [audit/v0.1.1-hardening.md](audit/v0.1.1-hardening.md) 第 5 节。
 
 ### 静态审计
 
@@ -647,6 +654,9 @@ bash scripts/audit.sh
 6. 载荷中不得有 `.img` / `.dtbo` / `.bin` / `.ko` 或任何 ELF 文件
 7. 行尾必须为 LF
 8. 回归测试必须通过；CI 配置必须存在且不引用任何 secret
+9. tracked 文件中引用的 ZIP 文件名必须是当前 `module.prop` 版本；`dist/SHA256SUMS` 列出的文件必须与 `dist/` 中实际存在的 ZIP 完全一致
+
+审计的边界：它做的是**模式匹配和契约检查**，不是证明逻辑正确。它能发现「出现了不该出现的字符串」和「应有的守卫不见了」，但不能证明一段通过检查的代码在任何输入下都安全。真正的行为保证来自 `tests/` 的回归测试。
 
 ### 隐私扫描
 
@@ -654,7 +664,7 @@ bash scripts/audit.sh
 bash scripts/privacy-scan.sh
 ```
 
-扫描已跟踪文件与 staged diff，查找密钥、私人邮箱、本机路径、设备序列号等。扫描器**不硬编码任何真实用户名**：构建机账户名在运行时从环境变量取得，且只报告「发现了」，不回显该值。
+扫描已跟踪文件与 staged diff，查找密钥、私人邮箱、本机路径、设备序列号等。扫描器**不硬编码任何真实用户名**：构建机账户名在运行时从环境变量取得，且只报告「发现了」，不回显该值。为避免把项目自身的公开署名误判为泄露，账户名只有在**路径或凭据上下文**中出现（如 `Users\<name>`、`/home/<name>`、`user.name =`）才计入。
 
 ### 运行时测试
 

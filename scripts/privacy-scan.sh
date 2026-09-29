@@ -76,13 +76,23 @@ for p in '[A-Za-z]:[\\/]Users[\\/][A-Za-z0-9_.-]{3,}' '/home/[a-z][a-z0-9_-]{2,}
 	[ -n "$m" ] && hit "concrete home / user path matches /$p/" "$m"
 done
 
-# Build-account name, taken from the environment at run time. The value is
-# never printed and never written to a file -- only the fact that it was found
-# in a tracked file is reported.
+# Build-account name, taken from the environment at run time. The value is never
+# printed and never written to a file -- only the fact that it was found in a
+# tracked file is reported.
+#
+# An account name matching the project's own public byline is NOT a leak, and a
+# bare occurrence of a short common word is not evidence of anything. So a match
+# only counts when the name appears in a path or credential context:
+#   - inside a home/Users path
+#   - as a git-config style "user.name = <name>" / "author <name>"
+#   - adjacent to a credential keyword
+# The project's own authorship strings (Copyright, author=, byline) are excluded.
 CURRENT_USER="${USERNAME:-${USER:-}}"
 if [ -n "$CURRENT_USER" ] && [ "${#CURRENT_USER}" -ge 3 ]; then
-	m="$(printf '%s\n' "$files" | xargs -r grep -inF "$CURRENT_USER" 2>/dev/null || true)"
-	[ -n "$m" ] && hit "build account name detected in tracked file" "$(printf '%s\n' "$m" | sed "s/$CURRENT_USER/[REDACTED]/g")"
+	m="$(printf '%s\n' "$files" | xargs -r grep -inF "$CURRENT_USER" 2>/dev/null |
+		grep -viE 'copyright|author=|## 许可|byline|BakaronLab' |
+		grep -iE 'users[\\/]|/home/|user\.name|user\.email|author [^=]*<|token|password|secret|credential' || true)"
+	[ -n "$m" ] && hit "build account name found in a path or credential context" "$(printf '%s\n' "$m" | sed "s/$CURRENT_USER/[REDACTED]/gI")"
 fi
 
 # email addresses other than the approved noreply form

@@ -58,7 +58,7 @@ jobs:
       - name: Install shellcheck
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq shellcheck
+          sudo apt-get install -y -qq shellcheck zip unzip
 
       - name: Shellcheck (device-side scripts, POSIX sh)
         run: |
@@ -93,6 +93,16 @@ jobs:
       - name: Privacy scan
         run: bash scripts/privacy-scan.sh
 
+      - name: Verify the committed artifact matches its published hash
+        run: |
+          set -e
+          # This is checked BEFORE building anything. Rebuilding and then hashing
+          # the rebuild would only prove the build is self-consistent; what a
+          # user downloading the release actually depends on is that the ZIP
+          # checked into dist/ is the one SHA256SUMS describes.
+          (cd dist && sha256sum -c SHA256SUMS)
+          echo "committed artifact: matches SHA256SUMS"
+
       - name: Build module ZIP
         run: bash scripts/build.sh
 
@@ -125,9 +135,23 @@ jobs:
           fi
           echo "zip contents: clean"
 
-          # The published hash must describe the artifact that was just built.
-          sha256sum -c dist/SHA256SUMS
+          # SHA256SUMS records bare file names, so it must be checked from
+          # inside dist/.
+          (cd dist && sha256sum -c SHA256SUMS)
           echo "sha256: PASS"
+
+      - name: Confirm a rebuild reproduces the committed artifact
+        run: |
+          set -e
+          # build.sh pins entry timestamps, so the archive bytes depend only on
+          # the module payload. A rebuild that differs means the checked-in ZIP
+          # no longer describes the sources next to it.
+          if ! git diff --quiet -- dist/; then
+            echo "FAIL: building produced a different artifact than the one committed"
+            git --no-pager diff --stat -- dist/
+            exit 1
+          fi
+          echo "rebuild reproducibility: PASS"
 
       - name: Confirm no device tree or partition artifact exists in the repo
         run: |

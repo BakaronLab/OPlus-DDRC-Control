@@ -336,6 +336,45 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 7. documentation must point at the artifact that actually ships
+# ---------------------------------------------------------------------------
+
+note "== 7. checking release references =="
+
+# A doc that still names a superseded ZIP sends users to a file that is no
+# longer in dist/ -- or, worse, to a revision this project has deprecated.
+version="$(sed -n 's/^version=//p' module/module.prop)"
+expected_zip="OPlus-DDRC-Control-$version.zip"
+note "  current version: $version"
+
+if [ ! -f "dist/$expected_zip" ]; then
+	bad "dist/$expected_zip (the version named in module.prop) does not exist"
+fi
+
+while IFS= read -r ref; do
+	[ -n "$ref" ] || continue
+	if [ "$ref" != "$expected_zip" ]; then
+		bad "a tracked file references a superseded artifact: $ref"
+	fi
+done < <(grep -rhoE 'OPlus-DDRC-Control-v[0-9][0-9A-Za-z.-]*\.zip' \
+	README.md audit/ module/ scripts/ tests/ .github/ 2>/dev/null | sort -u)
+
+# SHA256SUMS must describe exactly the ZIPs present in dist/, no more.
+if [ -f dist/SHA256SUMS ]; then
+	sums_zips="$(awk '{print $2}' dist/SHA256SUMS | sed 's/^\*//' | sort)"
+	real_zips="$(cd dist && ls -1 ./*.zip 2>/dev/null | sed 's|^\./||' | sort)"
+	if [ "$sums_zips" = "$real_zips" ]; then
+		note "  ok: SHA256SUMS lists exactly the ZIPs in dist/"
+	else
+		bad "dist/SHA256SUMS does not match the ZIPs in dist/"
+		printf '      in SHA256SUMS: %s\n' "$(printf '%s' "$sums_zips" | tr '\n' ' ')"
+		printf '      in dist/:      %s\n' "$(printf '%s' "$real_zips" | tr '\n' ' ')"
+	fi
+else
+	bad "dist/SHA256SUMS is missing"
+fi
+
+# ---------------------------------------------------------------------------
 
 echo
 if [ "$fail" = "0" ]; then
