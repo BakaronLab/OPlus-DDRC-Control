@@ -35,19 +35,25 @@ stock)
 	log "service: stock requested, OEM DDRC left untouched"
 	;;
 balanced | full)
-	if [ "$MODE" = "full" ] && ! dt_has_pair "$FULL_SHUT" "$FULL_TERM"; then
-		log "service: full requested but OEM pair $FULL_SHUT/$FULL_TERM is absent from the live device tree, downgrading to balanced"
-		MODE=balanced
+	# Any profile that cannot be validated against this exact device and this
+	# exact live device tree stays stock. There is deliberately no fallback
+	# from full to balanced: a profile that failed its own gate is not evidence
+	# that a different non-stock profile is safe to apply.
+	if ! profile_dt_ok "$MODE"; then
+		log "service: $MODE rejected, OEM pair $(profile_shut "$MODE")/$(profile_term "$MODE") absent from live device tree; staying stock"
+		state_write mode stock
+		exit 0
 	fi
 	if ! headroom_ok "$(profile_shut "$MODE")"; then
-		log "service: battery $(vbat_mv) mV has less than ${VBAT_HEADROOM_MV} mV headroom above $(profile_shut "$MODE") mV, not applying"
+		log "service: battery $(vbat_mv) mV has less than ${VBAT_HEADROOM_MV} mV headroom above $(profile_shut "$MODE") mV; staying stock"
 		state_write mode stock
 		exit 0
 	fi
 	if apply_with_rollback "$MODE"; then
 		log "service: applied mode=$MODE term=$(eff_val "$TERM_NODE") shutdown=$(eff_val "$SHUT_NODE")"
 	else
-		log "service: apply failed, rolled back to stock"
+		log "service: apply of $MODE failed; rolled back to stock"
+		state_write mode stock
 	fi
 	;;
 *)

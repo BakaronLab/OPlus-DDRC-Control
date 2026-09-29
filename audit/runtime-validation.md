@@ -155,16 +155,17 @@ Install-time key selection unavailable. Defaulting to BALANCED.
 结论：
 
 - 点击卸载后，运行时 force **不会立即消失**，会持续到设备重启。
-- `uninstall.sh` 在重启后的移除流程中才被执行，而那次重启本身已清除了所有 proc 层 force。
-- 真正必然生效的恢复方式是**重启手机**：runtime force 不写入任何持久存储，重启即彻底消失，OEM DDRC 自动恢复。
+- `uninstall.sh` 在重启后的移除流程中才被执行。
+- **实测确认的即时恢复方式是 Action 按钮切到 STOCK**（会立即清除 `force_active`，OEM voter 重新接管）。
+- 关于重启：proc 层的 `force_active` 属于内核运行时状态，按 Linux 的 proc 状态模型不会跨内核重启保留，因此重启**预期**会清除该 force。但本项目**尚未实测** reboot 后 gauge IC 内部 term 配置是否回到 OEM 值，也未实测 `service.sh` 的 reboot lifecycle，因此**不把「重启必然恢复全部 gauge 状态」作为已验证结论**。
 
-因此，若需要立即恢复，请先用 Action 按钮切到 STOCK（该操作立即清除 `force_active`），再卸载。
+因此，若需要立即恢复，请先用 Action 按钮切到 STOCK，再卸载。
 
 ---
 
 ## 5. 持久化电池数据未被触碰（实测核验）
 
-本项目最核心的安全主张是「不修改任何持久化电池数据」。该项通过了端到端实测核验：
+本项目的核心安全主张之一是「不修改任何持久化电池数据」。该项通过了端到端实测核验：
 
 | 项目 | 会话开始 | 会话结束（全部测试完成后） | 结论 |
 | --- | --- | --- | --- |
@@ -181,7 +182,18 @@ Install-time key selection unavailable. Defaulting to BALANCED.
 - 未修改 `boot` / `dtbo` / `vbmeta` / `system` / `vendor`
 - 未主动重启设备
 
-`deep_dischg_counts` 保持 3096 不变，直接证明运行时 override 走的是纯内存路径，不产生任何持久化副作用。
+### 这个证据能证明什么、不能证明什么
+
+**能证明的**：在这些特定计数器上，本次会话没有留下任何可观察的变化。这排除了「模块直接写这些计数器」这一类副作用。
+
+**不能证明的**：不能据此推断「运行时 override 走的是纯内存路径」或「不存在任何持久化副作用」。原因：
+
+- 这些计数器不变，只说明**这几个特定寄存器**没有变化，不覆盖 gauge IC 内部所有可能的配置存储
+- 对照公开源码：`force_active` 会触发 votable callback，`GAUGE_TERM_VOLTAGE` 的 callback 会经 `oplus_mms_gauge_set_deep_term_volt()` 下发 `OPLUS_IC_FUNC_GAUGE_SET_DEEP_TERM_VOLT`，并连带改变 FCC / SOH 系数（见 `audit/` 与 README「已确认的事实」）
+- 公开源码**没有**给出「term 配置一定写入 gauge NVRAM」的证据，也**没有**给出「一定不写」的证据
+- 因此 gauge IC 内部 term 寄存器的持久性属于**尚未确认**项
+
+准确的表述应当是：**已确认没有写这些计数器；gauge IC 内部的 term 配置持久性尚未确认。**
 
 > 注意：会话结束时 `chip_soc` 从 71 降至 60、`gauge_vbat` 从 4074 降至 3976 mV。这是设备在整个测试过程中**自然放电**的结果，与阈值的即时变化无关（阈值在测试结束前已恢复为 3250）。
 

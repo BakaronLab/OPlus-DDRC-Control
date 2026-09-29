@@ -7,3 +7,6 @@
 *.zip binary
 *.img binary
 *.ko binary
+
+# CI workflow files are consumed by GitHub Actions on Linux; keep them LF.
+.github/workflows/*.yml text eol=lf

@@ -40,13 +40,17 @@ if external_owner_present; then
 	exit 1
 fi
 
-if [ "$next" = "full" ] && ! dt_has_pair "$FULL_SHUT" "$FULL_TERM"; then
-	echo "Result: FULL OEM pair $FULL_SHUT/$FULL_TERM not found in the live device tree."
-	echo "Falling back to stock."
-	set_mode stock
-	config_set_mode stock
-	print_state
-	exit 1
+if [ "$next" = "full" ] || [ "$next" = "balanced" ]; then
+	if ! profile_dt_ok "$next"; then
+		echo "Result: REJECTED"
+		echo "Reason: OEM pair $(profile_shut "$next")/$(profile_term "$next") absent from live DT"
+		echo "Fallback: STOCK"
+		set_mode stock
+		config_set_mode stock
+		print_state
+		log "action: $next rejected, OEM pair absent from live DT, fell back to stock"
+		exit 1
+	fi
 fi
 
 if set_mode "$next"; then

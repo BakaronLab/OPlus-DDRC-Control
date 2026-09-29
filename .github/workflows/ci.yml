@@ -1,0 +1,121 @@
+name: ci
+
+# Static verification only. This project needs no secrets, no deploy keys and
+# no tokens: the workflow checks shell syntax, runs the static audit, runs the
+# privacy scan, runs the regression suite and rebuilds the module ZIP.
+#
+# The module itself is never executed here -- it targets an Android device and
+# is not runnable on a CI runner.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          uname -a
+          bash --version | head -1
+
+      - name: Shell syntax check
+        run: |
+          set -e
+          for f in module/*.sh scripts/*.sh tests/*.sh; do
+            printf '%s: ' "$f"
+            sh -n "$f"
+            echo ok
+          done
+          echo "syntax: PASS"
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+
+      - name: Shellcheck (device-side scripts, POSIX sh)
+        run: |
+          set -e
+          # Only these run on the device under the KernelSU ash shell, so only
+          # these must stay POSIX. The host-side tooling below is bash.
+          shellcheck -s sh -S warning \
+            module/*.sh \
+            scripts/device-safe-probe.sh \
+            scripts/device-readonly-audit.sh \
+            scripts/device-dt-dump.sh
+          echo "shellcheck (device-side): PASS"
+
+      - name: Shellcheck (host-side tooling, bash)
+        run: |
+          set -e
+          shellcheck -S warning -e SC1090,SC1091 \
+            scripts/audit.sh \
+            scripts/build.sh \
+            scripts/privacy-scan.sh \
+            scripts/host-probe.sh \
+            scripts/decode-dt.sh \
+            tests/*.sh
+          echo "shellcheck (host-side): PASS"
+
+      - name: Regression suite
+        run: sh tests/run-all.sh
+
+      - name: Static safety audit
+        run: sh scripts/audit.sh
+
+      - name: Privacy scan
+        run: sh scripts/privacy-scan.sh
+
+      - name: Build module ZIP
+        run: sh scripts/build.sh
+
+      - name: Verify ZIP contents and SHA256SUMS
+        run: |
+          set -e
+          zipfile="$(ls dist/OPlus-DDRC-Control-*.zip)"
+          echo "artifact: $zipfile"
+
+          # Every expected entry must be present, at the ZIP root.
+          expected="module.prop customize.sh service.sh uninstall.sh action.sh common.sh config.conf skip_mount"
+          for name in $expected; do
+            if ! unzip -l "$zipfile" | awk '{print $4}' | grep -qx "$name"; then
+              echo "FAIL: $name missing from ZIP root"
+              exit 1
+            fi
+          done
+          echo "zip entries: all present at root"
+
+          # No extra directory level, and nothing that must not ship.
+          if unzip -l "$zipfile" | awk '{print $4}' | grep -qE '^(OPlus-DDRC-Control|module)/'; then
+            echo "FAIL: ZIP contains an unexpected wrapper directory"
+            exit 1
+          fi
+          bad="$(unzip -l "$zipfile" | awk '{print $4}' |
+            grep -E '\.(img|dtbo|bin|ko)$|^system/|^vendor/|^product/|^odm/|^system_ext/|^my_product/' || true)"
+          if [ -n "$bad" ]; then
+            echo "FAIL: forbidden entry in ZIP: $bad"
+            exit 1
+          fi
+          echo "zip contents: clean"
+
+          # The published hash must describe the artifact that was just built.
+          sha256sum -c dist/SHA256SUMS
+          echo "sha256: PASS"
+
+      - name: Confirm no device tree or partition artifact exists in the repo
+        run: |
+          set -e
+          if git ls-files | grep -E '\.(img|dtbo|bin|ko)$'; then
+            echo "FAIL: binary partition artifact is tracked"
+            exit 1
+          fi
+          echo "tracked artifacts: clean"

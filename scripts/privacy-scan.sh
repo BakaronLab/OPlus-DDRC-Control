@@ -62,15 +62,28 @@ scan_files() {
 }
 files="$(scan_files)"
 
-# absolute home paths of the build machine
-for p in '[A-Za-z]:[\\/]Users[\\/][^\\/[:space:]"'"'"']+' '/home/[a-z][a-z0-9_-]+' '/c/Users/[A-Za-z0-9_.-]+' '/d/Users/[A-Za-z0-9_.-]+'; do
-	m="$(printf '%s\n' "$files" | xargs -r grep -inE "$p" 2>/dev/null || true)"
-	[ -n "$m" ] && hit "home / user path matches /$p/" "$m"
+# Absolute home paths of the build machine. These are generic SHAPES: the
+# scanner must never embed a real account name, hostname or private path.
+#
+# A shape appearing in the repository is not by itself a leak -- documentation
+# has to name the pattern it is describing. So a match only counts as a
+# violation when it contains a concrete account name (at least three word
+# characters after `Users/` or `home/`) and the line does not look like a
+# regex/pattern description (character classes or an ellipsis).
+for p in '[A-Za-z]:[\\/]Users[\\/][A-Za-z0-9_.-]{3,}' '/home/[a-z][a-z0-9_-]{2,}' '/c/Users/[A-Za-z0-9_.-]{3,}' '/d/Users/[A-Za-z0-9_.-]{3,}'; do
+	m="$(printf '%s\n' "$files" | xargs -r grep -inE "$p" 2>/dev/null |
+		grep -vE '\[A-Za-z|\[a-z|\[0-9|\.\.\.' || true)"
+	[ -n "$m" ] && hit "concrete home / user path matches /$p/" "$m"
 done
 
-# the literal Windows account name that appears on the build machine
-m="$(printf '%s\n' "$files" | xargs -r grep -inE 'Claus' 2>/dev/null || true)"
-[ -n "$m" ] && hit "build-user account name found" "$m"
+# Build-account name, taken from the environment at run time. The value is
+# never printed and never written to a file -- only the fact that it was found
+# in a tracked file is reported.
+CURRENT_USER="${USERNAME:-${USER:-}}"
+if [ -n "$CURRENT_USER" ] && [ "${#CURRENT_USER}" -ge 3 ]; then
+	m="$(printf '%s\n' "$files" | xargs -r grep -inF "$CURRENT_USER" 2>/dev/null || true)"
+	[ -n "$m" ] && hit "build account name detected in tracked file" "$(printf '%s\n' "$m" | sed "s/$CURRENT_USER/[REDACTED]/g")"
+fi
 
 # email addresses other than the approved noreply form
 m="$(printf '%s\n' "$files" | xargs -r grep -inE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' 2>/dev/null |

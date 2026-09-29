@@ -23,6 +23,15 @@ zip_path="$dist/$name.zip"
 rm -rf "$dist/stage"
 mkdir -p "$stage"
 
+# A deprecated build must not linger in dist/: users could flash the older,
+# unsafe revision. Only the artifact matching module.prop version is kept.
+for old in "$dist"/OPlus-DDRC-Control-*.zip; do
+	[ -e "$old" ] || continue
+	[ "$old" = "$zip_path" ] && continue
+	echo "removing superseded artifact: $(basename "$old")"
+	rm -f "$old"
+done
+
 cp "$repo_root/module/"* "$stage/"
 
 # Byte-level CR check (grep with a raw CR pattern is unreliable under MSYS).
@@ -44,6 +53,7 @@ rm -f "$zip_path"
 tar_bin=/c/Windows/System32/tar.exe
 [ -x "$tar_bin" ] || tar_bin="$(command -v tar)"
 
+# shellcheck disable=SC2046  # the staged file names must be word-split into argv
 (cd "$stage" && "$tar_bin" -a -c -f "$(cygpath -w "$zip_path")" $(ls -1))
 
 echo "built: dist/$name.zip"

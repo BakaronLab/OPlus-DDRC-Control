@@ -13,10 +13,14 @@
 - system / vendor / product / odm / system_ext / my_product
 - `/persist` / `/metadata`
 - `deep_dischg_counts` 等任何深放历史计数
-- 任何 gauge 持久化数据（Qmax、循环计数、电池序列号）
+- battery cycle count、Qmax、电池序列号
 - 任何充电电压、充电电流、温控参数
 
-版本：`v0.1.0-alpha` — **alpha**。这不是一个经过长期验证的成品。
+它**会**：通过真实的内核 votable 回调路径下发 gauge term-voltage，并连带改变驱动使用的 FCC / SOH 系数。这**不是**一次纯粹的显示层改动，详见 [已确认的事实](#已确认的事实)。
+
+版本：`v0.1.1-alpha` — **alpha**。这不是一个经过长期验证的成品。
+
+> **v0.1.0-alpha 已弃用。** 该版本的测试工具 `scripts/device-safe-probe.sh` 的 cleanup ownership 逻辑存在缺陷：无论是否拥有某个节点，退出时都会写入两个 `force_active`，因而可能在「只读」检查或检测到外部 owner 之后仍然改动节点。`dist/` 中只保留修复后的 `v0.1.1-alpha`。
 
 ---
 
@@ -36,6 +40,7 @@
 - [风险提示](#风险提示)
 - [技术来源](#技术来源)
 - [开发与审计](#开发与审计)
+- [许可](#许可)
 
 ---
 
@@ -58,7 +63,9 @@ OPlus 内核的充电框架通过一个名为 **votable** 的机制决定低电�
 - 通过 Action 按钮在档位之间切换
 - 卸载时清理自己造成的运行时覆盖
 
-由于 `force_active` 是**纯内存状态**，设备重启后一切自动恢复 OEM 行为，不留下任何需要清理的痕迹。
+`force_active` 是内核运行时的控制接口，不是写进任何分区的配置。清除它即让 OEM voter 重新接管（已实测）。
+
+**但不要把这一点等同于「重启后一定完全恢复」**：TERM override 会进入真实的 gauge term-voltage 回调路径（见 [已确认的事实](#已确认的事实)），而 gauge IC 内部 term 寄存器在重启 / 断电循环后的行为**本项目尚未实测**。详见 [尚未确认的事实](#尚未确认的事实)。
 
 ---
 
@@ -178,13 +185,13 @@ KernelSU 会把新安装的模块放入 `/data/adb/modules_update/<id>/`，**重
 
 ## 恢复 Stock
 
-有三种方式，效果不同：
+有三种方式。只有第一种是**本仓库实测确认**的：
 
-| 方式 | 时机 | 效果 |
-| --- | --- | --- |
-| Action 按钮切到 `stock` | 立即 | 清除 `force_active`，立刻回到 OEM 行为 |
-| 重启手机 | 立即（重启后） | 所有 proc 层 force 消失，OEM DDRC 自动恢复 |
-| 卸载模块 | **不保证立即生效**，见下 | |
+| 方式 | 时机 | 效果 | 证据等级 |
+| --- | --- | --- | --- |
+| Action 按钮切到 `stock` | 立即 | 清除 `force_active`，OEM voter 立刻重新接管 | **已实测** |
+| 卸载模块 | 不保证立即生效，见下 | 覆盖会保留到重启 | **已实测** |
+| 重启手机 | 重启后 | 预计 proc 层 force state 不再存在；完整 reboot / gauge 生命周期**尚未实测** | **未实测** |
 
 ### 关于卸载（重要）
 
@@ -195,14 +202,58 @@ KernelSU 会把新安装的模块放入 `/data/adb/modules_update/<id>/`，**重
 也就是说：
 
 - 点击卸载后，电池阈值**不会立即恢复**
-- `uninstall.sh` 是在**重启后的移除流程**中才执行的，而那次重启本身已经清除了所有 runtime force
-- **真正可靠、必然生效的恢复方式是重启手机**
+- `uninstall.sh` 是在**重启后的移除流程**中才执行的
 
-若需要立刻恢复，请先用 **Action 按钮切到 STOCK**，再卸载。
+**立即恢复的推荐做法**：先用 **Action 按钮切到 STOCK**，再卸载。这是本仓库实测过的、即时生效的路径。
+
+关于重启：proc 层的 `force_active` 属于内核运行时状态，按 Linux 的 proc 状态模型不会跨内核重启保留，因此重启**预期**会清除该 force。但本项目**尚未实测** reboot 之后：
+
+- gauge IC 内部 term-voltage 配置是否已经回到 OEM 值
+- `service.sh` 在重启时的实际执行情况
+
+因此本文档**不把「重启必然恢复全部 gauge 状态」作为已验证结论**。
 
 ---
 
 ## 安全设计
+
+### 已确认的事实
+
+以下结论有**实机测试证据**或**公开源码证据**支持。
+
+来自实机测试（本仓库 `audit/`，单台 PKU110）：
+
+- 模块不写任何 block device，不写 `/dev/block/*`
+- 不写 `boot` / `init_boot` / `vendor_boot` / `dtbo` / `vbmeta`
+- 不写 `system` / `vendor` / `product` / `odm` / `system_ext` / `my_product`
+- 不写 `deep_dischg_counts`、不写 `battery_cc`、不写 Qmax 或校准数据
+- 测试会话前后 `deep_dischg_counts` 保持 3096、`battery_cc` 保持 540，期间运行时 override 被反复施加与清除
+- `vbat_uv` 会随 override 同步改变（施加 balanced 后变为 3100，full 后变为 3000，清除后回到 3250）
+
+来自 OnePlusOSS 公开源码（该平台充电框架，见 [技术来源](#技术来源)）：
+
+- `force_active` / `force_val` 通过 proc votable debug interface 控制
+- `force_active` 写入 1 会调用 votable callback：`votable->callback(votable, votable->data, votable->force_val, DEBUG_FORCE_CLIENT, false)`
+- `force_active` 写入 0 也会调用 callback，改用 effective result 恢复 —— 即恢复 OEM 行为是回调驱动的，不是「只改一个变量」
+- `GAUGE_TERM_VOLTAGE` 的 callback 是 `oplus_gauge_term_voltage_vote_callback()`，它会：
+  - 依据 term 电压重算并下发 **FCC 系数**与 **SOH 系数**
+  - 调用 `oplus_mms_gauge_set_deep_term_volt()`，最终下发 `OPLUS_IC_FUNC_GAUGE_SET_DEEP_TERM_VOLT`（部分路径另有 `OPLUS_IC_FUNC_GAUGE_SET_THREE_LEVEL_TERM_VOLT`）
+
+因此必须明确：
+
+> **本模块不是只修改一个显示值。TERM override 会进入真实的 gauge term-voltage 回调路径，并且会改变驱动下发的 FCC / SOH 系数。**
+
+### 尚未确认的事实
+
+以下内容**本轮没有验证**，不能作为结论使用：
+
+- gauge IC 内部 term-voltage 寄存器是否完全 volatile
+- 重启之后 gauge IC 的 term 配置是否必然回到 OEM 值
+- 冷启动 / 意外断电之后的行为
+- `service.sh` 在真实重启时的执行情况与顺序
+- 多固件兼容性
+- 公开源码中是否存在将 term 配置写入 gauge NVRAM 的路径
+  （公开源码**没有**给出「一定写入 NVRAM」的证据，但同样**没有**给出「一定不写」的证据）
 
 ### 允许写入的节点（全部，无例外）
 
@@ -281,13 +332,30 @@ KernelSU 会把新安装的模块放入 `/data/adb/modules_update/<id>/`，**重
 
 `setsid` 让设备端 watchdog 脱离 adb 会话：即使 PC 断开、adb 进程被杀，它仍会执行恢复。
 
-**三层机制都只写两个 `force_active` 节点。**
+**三层都遵守同一套 ownership 规则**：只有本 probe 确实把某个节点的 `force_active` 写成 1 之后，才会去清除该节点。
+
+具体地（`v0.1.1-alpha` 的修复）：
+
+- 脚本持有 `OWN_TERM` / `OWN_SHUT` 两个所有权标记，**在 `force_active` 写入成功的那一刻**就置位，而不是等全部 readback 完成 —— 这样即使 readback 阶段失败，仍然能够正确回滚
+- `restore()` 只清除标记为已拥有的节点；从未被本 probe 激活的节点**不会被写入，连 `0` 都不会写**
+- 设备端 watchdog 读取 probe 写下的 owner 记录文件（`/data/local/tmp/ddrc/watchdog.owners`），只清理其中列出的节点
+- 因此 `check` 模式、preflight 失败、检测到外部 owner 这三种情况，在**所有**退出路径上都是**零写入**
+
+这一点由 `tests/test-probe.sh` 的回归测试强制保证：测试会对整个 mock 内核面做指纹比对，任何一处写入都会导致测试失败。
+
+### 只读未必为真 —— 静态审计的边界
+
+`scripts/audit.sh` 会检查脚本中是否出现危险原语、写目标是否越界、以及 `restore()` 是否带有所有权判断。但静态审计**不能**证明逻辑绝对安全：它只能证明「没有出现已知的坏写法」。
+
+真正的行为保证来自 `tests/` 下的回归测试（对 mock 内核面做零写入断言）以及 `audit/` 中的实机记录。三者都不能替代对代码本身的阅读。
 
 ---
 
 ## 已完成测试
 
-以下为本次实际完成并观察到的结果。详细记录见 [audit/](audit/)。
+以下为实际完成并观察到的结果。详细记录见 [audit/](audit/)。
+
+### v0.1.0-alpha 期间（实机）
 
 | 测试项 | 结果 |
 | --- | --- |
@@ -307,17 +375,28 @@ KernelSU 会把新安装的模块放入 `/data/adb/modules_update/<id>/`，**重
 | `action.sh` 档位循环与边界 | **[PASS]** |
 | 外部 owner 拒绝路径 | **[PASS]** 未写入任何节点 |
 | `uninstall.sh` 恢复逻辑 | **[PASS]** |
-| `dt_has_pair()` 电压对判定（7 组） | **[PASS]** |
-| 静态安全审计 `scripts/audit.sh` | **[PASS]** |
+
+### v0.1.1-alpha 期间（静态 + 回归测试，无实机 force）
+
+| 测试项 | 结果 |
+| --- | --- |
 | Shell 语法检查（`sh -n` 全部脚本） | **[PASS]** |
 | Shell 静态分析（`shellcheck -s sh`） | **[PASS]** 零告警 |
+| 回归测试：probe ownership（69 项断言） | **[PASS]** |
+| 回归测试：模块门禁与 fail-closed（33 项断言） | **[PASS]** |
+| 回归测试：external owner 零写 | **[PASS]** |
+| 回归测试：`check` 模式零写 | **[PASS]** |
+| 回归测试：bal / full 各自独立 DT 门禁 | **[PASS]** |
+| 静态安全审计 `scripts/audit.sh` | **[PASS]** |
 | 隐私 / 密钥扫描 | **[PASS]** |
+| CI 配置（语法 + shellcheck + 测试 + 审计 + 构建） | **[PASS]** |
 
 ### 关于这些 PASS 的边界
 
 - 「运行时接受」只证明**内核接受了该参数**，`vbat_uv` 随之改变。它**不证明**电池在真实放电中会在该电压关断。
-- 所有运行时测试的实时电压都在 4000 mV 以上，**从未接近** 3100 或 3000 mV。
-- **重启后 `service.sh` 是否自动执行，本轮未验证**（本轮禁止重启）。
+- 所有实机运行时测试的实时电压都在 4000 mV 以上，**从未接近** 3100 或 3000 mV。
+- **重启后 `service.sh` 是否自动执行，尚未验证**。
+- v0.1.1 的安全性改进由**回归测试**保证，**没有**再次进行实机 force 验证；实机证据仍来自 v0.1.0 那一轮。
 
 ---
 
@@ -348,9 +427,17 @@ KernelSU 会把新安装的模块放入 `/data/adb/modules_update/<id>/`，**重
 
 ### 生命周期
 
-- ❌ **未验证重启后 `service.sh` 自动执行**（本轮禁止重启）
-- ❌ 未验证通过 Manager 图形界面点击卸载的完整生命周期（本轮使用 `ksud` 命令行等价路径）
+- ❌ **未验证重启后 `service.sh` 自动执行**
+- ❌ **未验证重启后 gauge IC term 配置是否回到 OEM 值**
+- ❌ **未验证冷启动 / 意外断电后的 gauge 状态**
+- ❌ 未验证通过 Manager 图形界面点击卸载的完整生命周期（使用 `ksud` 命令行等价路径）
 - ❌ 未验证模块在 OTA 升级后的行为
+
+### 回归测试未覆盖的部分
+
+- ❌ 回归测试只覆盖 mock 环境，**不能**证明真实内核行为
+- ❌ 未对 gauge IC 寄存器做任何读写验证
+- ❌ 未验证 `Max` 投票与其他 voter 的交互在长时间下的稳定性
 
 ---
 
@@ -416,36 +503,70 @@ KernelSU 会把新安装的模块放入 `/data/adb/modules_update/<id>/`，**重
 OPlus 充电框架的源码由 OnePlus 开源发布：
 
 - 组织页：<https://github.com/OnePlusOSS>
-- 本机型平台对应仓库：<https://github.com/OnePlusOSS/android_kernel_oneplus_sm8750>
+- 内核仓库（本机型平台）：<https://github.com/OnePlusOSS/android_kernel_oneplus_sm8750>
+- **充电框架 / device tree 仓库**：<https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8750>
 
-该框架中与本模块机制相关的文件（尚未在本项目中逐行比对）：
+本模块机制相关的源码位于后者的 `vendor/oplus/kernel/charger/` 下（路径已在 `oneplus/sm8750_b_16.0.0_ace_6` 分支核对存在）：
 
-- `oplus_sili.c`
-- `oplus_configfs.c`
-- `oplus_chg_voter.c`
-- `oplus_strategy_ddrc.c`
+| 文件 | 与本模块的关系 |
+| --- | --- |
+| `v2/oplus_chg_voter.c` | 定义四个 debug-force 节点与 `force_active` 的 callback 行为 |
+| `v2/mms/gauge/oplus_sili.c` | `GAUGE_TERM_VOLTAGE` 的回调与 `set_deep_term_volt` 下发路径 |
+| `v2/oplus_configfs.c` | 充电框架的 configfs 接口 |
+| `v2/strategy/oplus_strategy_ddrc.c` | DDRC 策略（曲线选择逻辑） |
 
-> **诚实说明**：本轮验证**没有**逐行阅读上述源码。本 README 中关于 votable 机制与 DDRC 行为的描述，来源如下。
+### 已核对的源码结论
+
+以下三条已在本轮对照公开源码确认（**这些结论之前只来自实机观察**）：
+
+1. **`force_active` 写入会调用 callback**（`oplus_chg_voter.c`）：
+
+```c
+votable->force_active = !!val;
+if (!votable->callback) goto out;
+if (votable->force_active)
+        rc = votable->callback(votable, votable->data,
+                               votable->force_val, DEBUG_FORCE_CLIENT, false);
+else
+        rc = votable->callback(votable, votable->data,
+                               effective_result, client, false);
+```
+
+注意 **`force_active` 写 0 时同样调用 callback**，只是改用 effective result。因此恢复不是「清掉一个内存变量」，而是驱动重新下发 OEM 值。
+
+2. **TERM override 进入真实 gauge 下发路径**（`oplus_sili.c`）：
+
+`oplus_gauge_term_voltage_vote_callback()` → `oplus_mms_gauge_set_deep_term_volt()` → `oplus_chg_ic_func(ic, OPLUS_IC_FUNC_GAUGE_SET_DEEP_TERM_VOLT, volt_mv)`
+
+3. **该回调还会改动 FCC / SOH 系数**：回调内按 term 电压查 `term_coeff` 表，然后执行
+`oplus_mms_gauge_push_fcc_coeff()` 与 `oplus_mms_gauge_push_soh_coeff()`。
+
+这解释了实测中「缓解 short-term FCC 数值变化」的现象，也说明**不应**把 FCC 数值变化解读为真实容量变化。
+
+> **公开源码不能证明的事情**：源码中没有直接证据表明 term 配置会被写入 gauge NVRAM。同样也没有证据表明它一定不会被写入。本项目因此**不断言任何一方**，并把 gauge IC 层的持久性列为「尚未确认的事实」。
 
 ### 结论来源分布
 
 | 结论 | 来源 |
 | --- | --- |
-| 四个 debug-force 节点的存在与行为 | **实机运行时测试** |
-| `force_active=1` 时 `DEBUG_FORCE_CLIENT` 直接接管、绕过 `Max` 投票 | **实机运行时测试** |
-| 清除 `force_active` 即可恢复 OEM voter | **实机运行时测试** |
+| 四个 debug-force 节点的存在与行为 | **实机运行时测试** + **源码核对** |
+| `force_active=1` 时 `DEBUG_FORCE_CLIENT` 直接接管、绕过 `Max` 投票 | **实机运行时测试** + **源码核对** |
+| 清除 `force_active` 会调用 callback 恢复 OEM 值 | **实机运行时测试** + **源码核对** |
+| TERM override 会下发 gauge deep-term 设置 | **源码核对** |
+| TERM override 会改动 FCC / SOH 系数 | **源码核对** + 实机观察一致 |
 | 生效值为 3250 mV，由 `SUPER_ENDURANCE_MODE_VOTER` 投出 | **实机只读读取** |
 | `balanced` / `full` 两组数值存在于 OEM 曲线 | **live device tree 解码** |
 | DDRC 曲线按 ratio × 温度分档 | **live device tree 解码** |
 | 深放计数为 3096、循环计数为 540 等电池状态 | **实机只读读取** |
-| `Max` 投票语义为「多 voter 取最大值」 | **实机观察推断**（未核对源码） |
-| term_coeff 三列的确切语义 | **推断**：第 1 列与曲线 term 列完全吻合，第 2、3 列语义未确认 |
+| gauge IC term 寄存器是否 volatile | **未确认** |
+| 重启 / 断电后 gauge term 是否回到 OEM | **未确认** |
+| term_coeff 第 2、3 列的确切语义 | **推断**：第 1 列与曲线 term 列完全吻合 |
 | DDRC 曲线第 1 列（阈值列）的确切语义 | **未确认**，本项目不依赖该列 |
-| `deep_dischg_counts` 写入会调用 gauge 持久化接口 | **来自项目安全约定**，本轮未验证（也刻意不验证） |
+| `deep_dischg_counts` 写入会调用 gauge 持久化接口 | **来自项目安全约定**，未验证（也刻意不验证） |
 
 ### 未验证的推断
 
-上面标注为「推断」与「未确认」的项目，都是**基于单台设备单次观察**得出的，没有源码级确认，也没有跨设备验证。
+上面标注为「推断」与「未确认」的项目，都是**基于单台设备单次观察**或**部分源码阅读**得出的，没有跨设备验证。
 
 ---
 
@@ -456,6 +577,7 @@ OPlus 充电框架的源码由 OnePlus 开源发布：
 ```
 .
 ├── README.md
+├── LICENSE                   # MIT（仅覆盖本仓库自己的脚本与文档）
 ├── module/                   # 模块载荷（打包进 ZIP 的内容）
 │   ├── module.prop
 │   ├── customize.sh          # 安装期：校验机型、选档位、写 config
@@ -468,13 +590,20 @@ OPlus 充电框架的源码由 OnePlus 开源发布：
 ├── scripts/
 │   ├── build.sh              # 构建 dist/*.zip 与 SHA256SUMS
 │   ├── audit.sh              # 静态安全审计
+│   ├── privacy-scan.sh       # 隐私 / 密钥扫描
 │   ├── device-readonly-audit.sh   # 设备端只读基线采集
 │   ├── device-dt-dump.sh          # 设备端 device tree dump（递归）
 │   ├── decode-dt.sh               # PC 端大端 u32 解码
-│   ├── device-safe-probe.sh       # 设备端运行时测试（带三层恢复）
+│   ├── device-safe-probe.sh       # 设备端运行时测试（ownership-aware）
 │   └── host-probe.sh              # PC 端驱动
+├── tests/                    # 回归测试（mock 内核面，不需要真机）
+│   ├── lib.sh
+│   ├── test-common.sh
+│   ├── test-probe.sh
+│   └── run-all.sh
+├── .github/workflows/ci.yml  # 静态 CI
 ├── audit/                    # 脱敏后的验证记录
-└── dist/                     # 构建产物
+└── dist/                     # 构建产物（仅保留当前版本）
 ```
 
 ### 构建
@@ -483,9 +612,24 @@ OPlus 充电框架的源码由 OnePlus 开源发布：
 sh scripts/build.sh
 ```
 
-生成 `dist/OPlus-DDRC-Control-v0.1.0-alpha.zip` 与 `dist/SHA256SUMS`。
+生成 `dist/OPlus-DDRC-Control-<version>.zip` 与 `dist/SHA256SUMS`。构建脚本会**删除**与当前 `module.prop` 版本不一致的旧 ZIP，避免仓库里同时存在多个可刷入的版本。
 
 ZIP 的根目录直接包含模块文件（`module.prop`、`customize.sh` …），没有多余的目录层级——这是 KernelSU 安装器要求的格式。
+
+### 回归测试
+
+```sh
+sh tests/run-all.sh
+```
+
+测试**不需要真机**。它们把脚本指向一个 mock 的 `/proc/oplus-votable`、`/sys/class/oplus_chg` 和 device tree，然后断言：
+
+- `check` 模式、preflight 失败、检测到外部 owner 时，**整棵 mock 内核面零写入**
+- `restore()` 只清除 probe 自己激活的节点
+- balanced 与 full 各自独立通过 live DT 门禁；pair 不存在时回落 STOCK，**不会**从 full 降级到 balanced
+- 模块绝不清理无法证明属于自己所有权的 force
+
+「零写入」是通过对整个 mock 目录树做指纹比对来断言的，不是只比对那两个节点。
 
 ### 静态审计
 
@@ -496,10 +640,21 @@ sh scripts/audit.sh
 审计内容：
 
 1. 全部脚本中不得出现 `fastboot flash` / `dd if=` / `/dev/block/` / `remount` / `mkfs` / `setenforce 0` 等破坏性原语
-2. 内核写入只能通过 `common.sh` 中定义的四个节点变量
-3. 不得出现 `system/` / `vendor/` / `product/` / `system.prop` / `sepolicy.rule` / `initrc` 等非 systemless 载荷
-4. 载荷中不得有 `.img` / `.dtbo` / `.bin` / `.ko` 或任何 ELF 文件
-5. 行尾必须为 LF
+2. 内核写入只能通过 `common.sh` / `device-safe-probe.sh` 中定义的四个节点变量
+3. `restore()` 必须带所有权判断，不得无条件清除两个 `force_active`
+4. `service.sh` 与 `action.sh` 必须用 `profile_dt_ok()` 做 live DT 门禁，且不得存在 full→balanced 降级路径
+5. 不得出现 `system/` / `vendor/` / `product/` / `system.prop` / `sepolicy.rule` / `initrc` 等非 systemless 载荷
+6. 载荷中不得有 `.img` / `.dtbo` / `.bin` / `.ko` 或任何 ELF 文件
+7. 行尾必须为 LF
+8. 回归测试必须通过；CI 配置必须存在且不引用任何 secret
+
+### 隐私扫描
+
+```sh
+sh scripts/privacy-scan.sh
+```
+
+扫描已跟踪文件与 staged diff，查找密钥、私人邮箱、本机路径、设备序列号等。扫描器**不硬编码任何真实用户名**：构建机账户名在运行时从环境变量取得，且只报告「发现了」，不回显该值。
 
 ### 运行时测试
 
@@ -520,7 +675,13 @@ sh scripts/host-probe.sh full
 
 ---
 
-## 许可与免责
+## 许可
+
+本项目自己的脚本与文档以 **MIT License** 授权，见 [LICENSE](LICENSE)。Copyright (c) 2026 BakaronLab。
+
+**不覆盖**第三方源码：README 中链接的 OnePlusOSS 充电框架源码由其各自的权利人发布，本仓库不对其重新授权，也没有把任何第三方源码内置进本仓库。
+
+## 免责
 
 本项目按现状提供，不附带任何担保。
 

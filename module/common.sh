@@ -16,7 +16,7 @@
 # force_val is never reset to 0: the interface keeps a last value, and the OEM
 # voters are restored by clearing force_active alone.
 
-VOT=/proc/oplus-votable
+VOT=${DDRC_VOT_ROOT:-/proc/oplus-votable}
 TERM_NODE="$VOT/GAUGE_TERM_VOLTAGE"
 SHUT_NODE="$VOT/GAUGE_SHUTDOWN_VOLTAGE"
 TERM_VAL="$TERM_NODE/force_val"
@@ -24,8 +24,8 @@ TERM_ACT="$TERM_NODE/force_active"
 SHUT_VAL="$SHUT_NODE/force_val"
 SHUT_ACT="$SHUT_NODE/force_active"
 
-BAT=/sys/class/oplus_chg/battery
-DT_STRAT=/sys/firmware/devicetree/base/soc/oplus,mms_gauge/ddrc_strategy
+BAT=${DDRC_BAT_ROOT:-/sys/class/oplus_chg/battery}
+DT_STRAT=${DDRC_DT_STRAT:-/sys/firmware/devicetree/base/soc/oplus,mms_gauge/ddrc_strategy}
 
 STATE_DIR="$MODDIR/state"
 LOG_FILE="$STATE_DIR/module.log"
@@ -173,6 +173,11 @@ dt_has_pair() {
 	# (shutdown, term) pair. Device tree cells are big-endian u32 and the two
 	# values are adjacent u32 cells in every row, so the 16 hex digits of the
 	# two 4-byte cells are an exact match for that row.
+	#
+	# Only strategy_temp_normal is scanned. The cold/cool tables legitimately
+	# allow lower values (e.g. 2750/3059) as an OEM low-temperature policy; a
+	# pair that only appears there must not authorise an override at normal
+	# temperature.
 	pat="$(printf '%08x%08x' "$1" "$2")"
 	for f in "$DT_STRAT"/*/strategy_temp_normal; do
 		[ -f "$f" ] || continue
@@ -182,6 +187,18 @@ dt_has_pair() {
 		esac
 	done
 	return 1
+}
+
+profile_dt_ok() {
+	# profile_dt_ok <stock|balanced|full>
+	# Single gate used by both set_mode() and service.sh. STOCK never needs DT
+	# evidence because it applies no override.
+	case "$1" in
+	stock) return 0 ;;
+	balanced) dt_has_pair "$BALANCED_SHUT" "$BALANCED_TERM" ;;
+	full) dt_has_pair "$FULL_SHUT" "$FULL_TERM" ;;
+	*) return 1 ;;
+	esac
 }
 
 # -------------------------------------------------------------------- apply
@@ -236,6 +253,10 @@ apply_with_rollback() {
 
 set_mode() {
 	# set_mode <stock|balanced|full> -- full runtime transition, used by action.sh
+	#
+	# Fail-closed contract: any failed precondition leaves the device with no
+	# force applied and mode recorded as stock. A profile that cannot be
+	# validated is never downgraded to a different non-stock profile.
 	target="$1"
 	case "$target" in
 	stock)
@@ -248,21 +269,28 @@ set_mode() {
 		restore_owned
 		if ! device_identity_ok; then
 			log "refusing $target: device identity check failed"
+			state_write mode stock
 			return 1
 		fi
 		if ! votable_nodes_present; then
 			log "refusing $target: votable nodes not present"
+			state_write mode stock
 			return 1
 		fi
-		if [ "$target" = "full" ] && ! dt_has_pair "$FULL_SHUT" "$FULL_TERM"; then
-			log "refusing full: OEM pair $FULL_SHUT/$FULL_TERM not present in live device tree"
+		if ! profile_dt_ok "$target"; then
+			log "refusing $target: OEM pair $(profile_shut "$target")/$(profile_term "$target") absent from live device tree"
+			state_write mode stock
 			return 1
 		fi
 		if ! headroom_ok "$(profile_shut "$target")"; then
 			log "refusing $target: battery voltage $(vbat_mv) mV too close to $(profile_shut "$target") mV"
+			state_write mode stock
 			return 1
 		fi
-		apply_with_rollback "$target" || return 1
+		apply_with_rollback "$target" || {
+			state_write mode stock
+			return 1
+		}
 		state_write mode "$target"
 		return 0
 		;;
