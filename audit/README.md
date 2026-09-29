@@ -42,7 +42,7 @@
 ```sh
 su -c 'sh scripts/device-readonly-audit.sh'
 su -c 'sh scripts/device-dt-dump.sh'
-sh scripts/decode-dt.sh audit/raw/dt-dump.txt
+bash scripts/decode-dt.sh audit/raw/dt-dump.txt
 ```
 
 运行时验证脚本带有多层恢复保护，使用说明见 `scripts/device-safe-probe.sh` 顶部注释与根目录 `README.md`。

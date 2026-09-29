@@ -609,7 +609,7 @@ else
 ### 构建
 
 ```sh
-sh scripts/build.sh
+bash scripts/build.sh
 ```
 
 生成 `dist/OPlus-DDRC-Control-<version>.zip` 与 `dist/SHA256SUMS`。构建脚本会**删除**与当前 `module.prop` 版本不一致的旧 ZIP，避免仓库里同时存在多个可刷入的版本。
@@ -619,7 +619,7 @@ ZIP 的根目录直接包含模块文件（`module.prop`、`customize.sh` …）
 ### 回归测试
 
 ```sh
-sh tests/run-all.sh
+bash tests/run-all.sh
 ```
 
 测试**不需要真机**。它们把脚本指向一个 mock 的 `/proc/oplus-votable`、`/sys/class/oplus_chg` 和 device tree，然后断言：
@@ -634,7 +634,7 @@ sh tests/run-all.sh
 ### 静态审计
 
 ```sh
-sh scripts/audit.sh
+bash scripts/audit.sh
 ```
 
 审计内容：
@@ -651,7 +651,7 @@ sh scripts/audit.sh
 ### 隐私扫描
 
 ```sh
-sh scripts/privacy-scan.sh
+bash scripts/privacy-scan.sh
 ```
 
 扫描已跟踪文件与 staged diff，查找密钥、私人邮箱、本机路径、设备序列号等。扫描器**不硬编码任何真实用户名**：构建机账户名在运行时从环境变量取得，且只报告「发现了」，不回显该值。
@@ -659,10 +659,10 @@ sh scripts/privacy-scan.sh
 ### 运行时测试
 
 ```sh
-sh scripts/host-probe.sh check      # 只读
-sh scripts/host-probe.sh noop       # 写入等于当前值的数值
-sh scripts/host-probe.sh balanced
-sh scripts/host-probe.sh full
+bash scripts/host-probe.sh check      # 只读
+bash scripts/host-probe.sh noop       # 写入等于当前值的数值
+bash scripts/host-probe.sh balanced
+bash scripts/host-probe.sh full
 ```
 
 `host-probe.sh` 会在执行前确认只有一个 adb 设备、推送脚本、开启 PC 端 watchdog，并在结束后独立复核最终状态。

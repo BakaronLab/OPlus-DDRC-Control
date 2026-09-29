@@ -304,9 +304,11 @@ fi
 # ---------------------------------------------------------------------------
 
 note "== 5. running the regression suite =="
-if [ -x tests/run-all.sh ] || [ -f tests/run-all.sh ]; then
-	if sh tests/run-all.sh >/tmp/ddrc-tests.log 2>&1; then
-		note "  ok: $(grep -c PASS /tmp/ddrc-tests.log) assertions passed"
+if [ -f tests/run-all.sh ]; then
+	# tests/run-all.sh is a bash script (arrays, process substitution), so it
+	# must not be handed to a POSIX sh. On the runner /bin/sh is dash.
+	if bash tests/run-all.sh >/tmp/ddrc-tests.log 2>&1; then
+		note "  ok: $(( $(grep -c '   PASS' /tmp/ddrc-tests.log) )) assertions passed"
 	else
 		bad "regression suite failed"
 		tail -20 /tmp/ddrc-tests.log | sed 's/^/      /'

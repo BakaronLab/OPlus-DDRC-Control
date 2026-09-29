@@ -20,22 +20,40 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show environment
         run: |
           uname -a
           bash --version | head -1
+          ls -l /bin/sh
 
-      - name: Shell syntax check
+      - name: Shell syntax check (device-side scripts, POSIX sh)
         run: |
           set -e
-          for f in module/*.sh scripts/*.sh tests/*.sh; do
+          # These run on the device under the KernelSU ash shell, so they are
+          # checked with a strictly POSIX shell (dash on the runner).
+          for f in module/*.sh scripts/device-safe-probe.sh \
+                   scripts/device-readonly-audit.sh scripts/device-dt-dump.sh; do
             printf '%s: ' "$f"
             sh -n "$f"
             echo ok
           done
-          echo "syntax: PASS"
+          echo "syntax (device-side): PASS"
+
+      - name: Shell syntax check (host-side tooling, bash)
+        run: |
+          set -e
+          # These are PC-side tools invoked with `bash`; they are not shipped to
+          # the device and are second-class to the module payload, but they must
+          # still parse cleanly under bash.
+          for f in scripts/audit.sh scripts/build.sh scripts/privacy-scan.sh \
+                   scripts/host-probe.sh scripts/decode-dt.sh tests/*.sh; do
+            printf '%s: ' "$f"
+            bash -n "$f"
+            echo ok
+          done
+          echo "syntax (host-side): PASS"
 
       - name: Install shellcheck
         run: |
@@ -67,16 +85,16 @@ jobs:
           echo "shellcheck (host-side): PASS"
 
       - name: Regression suite
-        run: sh tests/run-all.sh
+        run: bash tests/run-all.sh
 
       - name: Static safety audit
-        run: sh scripts/audit.sh
+        run: bash scripts/audit.sh
 
       - name: Privacy scan
-        run: sh scripts/privacy-scan.sh
+        run: bash scripts/privacy-scan.sh
 
       - name: Build module ZIP
-        run: sh scripts/build.sh
+        run: bash scripts/build.sh
 
       - name: Verify ZIP contents and SHA256SUMS
         run: |

@@ -222,7 +222,7 @@ su -c 'sh scripts/device-readonly-audit.sh'
 su -c 'sh scripts/device-dt-dump.sh'
 
 # PC 端解码（处理 big-endian u32 与 ASCII 字符串）
-sh scripts/decode-dt.sh audit/raw/dt-dump.txt
+bash scripts/decode-dt.sh audit/raw/dt-dump.txt
 ```
 
 `device-dt-dump.sh` 使用 `find -type f` **递归**遍历：DDRC 曲线位于子节点（`deep_spec,ddbc_curve/`、`ddrc_strategy/strategy_ratio_range_*/`）中，非递归遍历会漏掉全部曲线数据 —— 这也是为什么早期一次非递归 dump 只看到 21 个属性。

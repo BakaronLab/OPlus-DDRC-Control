@@ -223,7 +223,7 @@ su -c 'sh scripts/device-readonly-audit.sh'
 su -c 'sh scripts/device-dt-dump.sh'
 
 # PC 端解码（自动处理 big-endian u32 与 ASCII）
-sh scripts/decode-dt.sh audit/raw/dt-dump.txt
+bash scripts/decode-dt.sh audit/raw/dt-dump.txt
 ```
 
 `scripts/device-dt-dump.sh` 使用 `find -type f` 递归遍历，因为 DDRC 曲线位于子节点（`deep_spec,ddbc_curve/`、`ddrc_strategy/strategy_ratio_range_*/`）中，非递归会漏掉全部曲线数据。

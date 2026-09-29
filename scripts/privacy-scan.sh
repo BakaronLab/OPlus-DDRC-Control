@@ -5,7 +5,7 @@
 # information and credentials. Intended to be run before `git push` on this
 # public repository.
 #
-# Usage: sh scripts/privacy-scan.sh
+# Usage: bash scripts/privacy-scan.sh
 
 set -uo pipefail
 
