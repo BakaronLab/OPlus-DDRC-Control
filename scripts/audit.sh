@@ -374,6 +374,18 @@ else
 	bad "dist/SHA256SUMS is missing"
 fi
 
+# The published artifact must contain exactly the module payload, with the
+# canonical permissions, and match module/ byte for byte. This is checked here
+# as well as in CI so that a local audit cannot pass while dist/ is stale.
+if [ -f "dist/$expected_zip" ]; then
+	if bash scripts/verify-artifact.sh "dist/$expected_zip" >/tmp/ddrc-artifact.log 2>&1; then
+		note "  ok: dist/$expected_zip matches module/ (content, structure, permissions)"
+	else
+		bad "dist/$expected_zip failed artifact verification"
+		sed 's/^/      /' /tmp/ddrc-artifact.log
+	fi
+fi
+
 # ---------------------------------------------------------------------------
 
 echo

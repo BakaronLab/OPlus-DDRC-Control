@@ -47,8 +47,9 @@ jobs:
           # These are PC-side tools invoked with `bash`; they are not shipped to
           # the device and are second-class to the module payload, but they must
           # still parse cleanly under bash.
-          for f in scripts/audit.sh scripts/build.sh scripts/privacy-scan.sh \
-                   scripts/host-probe.sh scripts/decode-dt.sh tests/*.sh; do
+          for f in scripts/audit.sh scripts/build.sh scripts/verify-artifact.sh \
+                   scripts/privacy-scan.sh scripts/host-probe.sh \
+                   scripts/decode-dt.sh tests/*.sh; do
             printf '%s: ' "$f"
             bash -n "$f"
             echo ok
@@ -78,6 +79,7 @@ jobs:
           shellcheck -S warning -e SC1090,SC1091 \
             scripts/audit.sh \
             scripts/build.sh \
+            scripts/verify-artifact.sh \
             scripts/privacy-scan.sh \
             scripts/host-probe.sh \
             scripts/decode-dt.sh \
@@ -93,65 +95,33 @@ jobs:
       - name: Privacy scan
         run: bash scripts/privacy-scan.sh
 
-      - name: Verify the committed artifact matches its published hash
+      - name: Verify the committed artifact
         run: |
           set -e
-          # This is checked BEFORE building anything. Rebuilding and then hashing
-          # the rebuild would only prove the build is self-consistent; what a
-          # user downloading the release actually depends on is that the ZIP
-          # checked into dist/ is the one SHA256SUMS describes.
-          (cd dist && sha256sum -c SHA256SUMS)
-          echo "committed artifact: matches SHA256SUMS"
+          # This must run BEFORE the build. Everything asserted here is about the
+          # artifact checked into dist/: that it matches the published hash, and
+          # that its contents still describe module/ next to it. Rebuilding first
+          # would overwrite it, and hashing a file we just generated proves
+          # nothing about what a user downloads.
+          bash scripts/verify-artifact.sh "$(ls dist/OPlus-DDRC-Control-*.zip)" --expect-dist-hash
 
       - name: Build module ZIP
         run: bash scripts/build.sh
 
-      - name: Verify ZIP contents and SHA256SUMS
+      - name: Verify the freshly built artifact
         run: |
           set -e
-          zipfile="$(ls dist/OPlus-DDRC-Control-*.zip)"
-          echo "artifact: $zipfile"
-
-          # Every expected entry must be present, at the ZIP root.
-          expected="module.prop customize.sh service.sh uninstall.sh action.sh common.sh config.conf skip_mount"
-          for name in $expected; do
-            if ! unzip -l "$zipfile" | awk '{print $4}' | grep -qx "$name"; then
-              echo "FAIL: $name missing from ZIP root"
-              exit 1
-            fi
-          done
-          echo "zip entries: all present at root"
-
-          # No extra directory level, and nothing that must not ship.
-          if unzip -l "$zipfile" | awk '{print $4}' | grep -qE '^(OPlus-DDRC-Control|module)/'; then
-            echo "FAIL: ZIP contains an unexpected wrapper directory"
-            exit 1
-          fi
-          bad="$(unzip -l "$zipfile" | awk '{print $4}' |
-            grep -E '\.(img|dtbo|bin|ko)$|^system/|^vendor/|^product/|^odm/|^system_ext/|^my_product/' || true)"
-          if [ -n "$bad" ]; then
-            echo "FAIL: forbidden entry in ZIP: $bad"
-            exit 1
-          fi
-          echo "zip contents: clean"
-
-          # SHA256SUMS records bare file names, so it must be checked from
-          # inside dist/.
-          (cd dist && sha256sum -c SHA256SUMS)
-          echo "sha256: PASS"
-
-      - name: Confirm a rebuild reproduces the committed artifact
-        run: |
-          set -e
-          # build.sh pins entry timestamps, so the archive bytes depend only on
-          # the module payload. A rebuild that differs means the checked-in ZIP
-          # no longer describes the sources next to it.
-          if ! git diff --quiet -- dist/; then
-            echo "FAIL: building produced a different artifact than the one committed"
-            git --no-pager diff --stat -- dist/
-            exit 1
-          fi
-          echo "rebuild reproducibility: PASS"
+          # build.sh has now overwritten dist/ and regenerated SHA256SUMS, so the
+          # published hash is intentionally not asserted here -- this step proves
+          # the build works on a clean host and produces a valid artifact. The
+          # content comparison against module/ is what carries the weight.
+          #
+          # Archive *bytes* are deliberately never compared between hosts: the
+          # deflate output depends on the zlib the local zip(1) links against, so
+          # requiring byte equality would fail CI for reasons that have nothing
+          # to do with the module. Structure, permissions and content are the
+          # properties a user actually depends on.
+          bash scripts/verify-artifact.sh "$(ls dist/OPlus-DDRC-Control-*.zip)"
 
       - name: Confirm no device tree or partition artifact exists in the repo
         run: |

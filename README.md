@@ -589,6 +589,7 @@ else
 │   └── skip_mount
 ├── scripts/
 │   ├── build.sh              # 构建 dist/*.zip 与 SHA256SUMS
+│   ├── verify-artifact.sh    # 校验产物结构 / 权限 / 内容是否匹配 module/
 │   ├── audit.sh              # 静态安全审计
 │   ├── privacy-scan.sh       # 隐私 / 密钥扫描
 │   ├── device-readonly-audit.sh   # 设备端只读基线采集
@@ -616,10 +617,23 @@ bash scripts/build.sh
 
 ZIP 的根目录直接包含模块文件（`module.prop`、`customize.sh` …），没有多余的目录层级——这是 KernelSU 安装器要求的格式。
 
-两条关于构建的说明：
+构建结束后会自动调用 `scripts/verify-artifact.sh` 校验产物，任何一项不通过就**删除产物并失败**。三项较容易踩到的构建陷阱：
 
-- 构建**优先使用 Info-ZIP `zip(1)`**。若宿主只有 `tar`，脚本会警告：Windows 自带的 bsdtar 也能写出真正的 ZIP，但字节与 CI 产出的不同，因此哈希不会一致。写出后脚本会校验归档的前 4 字节必须是 ZIP magic（`50 4b 03 04`），否则直接失败——GNU tar 在 Linux 上会把 `.zip` 写成 uStar 归档，这个检查就是为了拦下这种情况。
-- 所有条目的时间戳被**固定为同一个值**，因此归档字节只由模块内容决定。同样的源码在同一类宿主上重复构建会得到相同的 SHA256。
+- **归档必须是真正的 ZIP。** 脚本优先使用 Info-ZIP `zip(1)`；只有 `tar` 时会警告，因为 Windows 自带的 bsdtar 虽然也能写出真 ZIP，但字节与 CI 产出的不同。写出后校验前 4 字节必须是 ZIP magic（`50 4b 03 04`）——GNU tar 在 Linux 上会把 `.zip` 写成 uStar 归档，这个检查专门拦它。
+- **宿主的文件系统必须能保存 Unix 权限。** ZIP 按条目记录权限位，`zip(1)` 从文件系统读取。在 Windows 盘符（MSYS/Git Bash）和部分容器挂载上，`chmod` 是**静默无效**的：所有文件都读成 `0777`，模块会带着全局可写权限发布。构建脚本会先探测 staging 目录能否保存权限，不能就把 staging 换到别处；都做不到时明确警告并不通过校验。
+- **条目时间戳被固定**，使归档字节只由模块内容决定，而不取决于构建发生在什么时候。
+
+### 产物校验
+
+```sh
+bash scripts/verify-artifact.sh dist/OPlus-DDRC-Control-<version>.zip [--expect-dist-hash]
+```
+
+校验归档确实是 ZIP、条目集合恰好等于模块载荷且位于根目录、没有镜像/内核模块/分区目录、每个条目的权限是 `755`（`*.sh`）或 `644`（其余），以及**每个条目的内容与工作区 `module/` 逐字节相同**。
+
+最后一项是让 `dist/` 保持诚实的关键：它证明仓库里的 ZIP 仍然描述着它旁边的源码。
+
+值得注意的是这里**不比对归档字节**。deflate 的输出依赖本机 `zip(1)` 链接的 zlib，要求跨主机字节相等只会让 CI 因为与模块无关的原因变红。内容、结构与权限才是使用者真正依赖的性质。
 
 ### 回归测试
 

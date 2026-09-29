@@ -17,8 +17,39 @@ version="$(sed -n 's/^version=//p' "$repo_root/module/module.prop")"
 
 name="OPlus-DDRC-Control-$version"
 dist="$repo_root/dist"
-stage="$dist/stage/$name"
 zip_path="$dist/$name.zip"
+
+# ZIP records Unix permissions per entry, and zip(1) copies them from the
+# staging filesystem. On a filesystem that cannot represent them -- Windows
+# drives under MSYS/Git Bash, many container mounts -- every file reads as 0777,
+# so the chmod calls below are a silent no-op and the module would ship
+# world-writable. Probe the staging parent and move staging elsewhere when it
+# cannot hold modes.
+mode_capable() {
+	[ -d "$1" ] || return 1
+	probe="$1/.ddrc-mode-probe"
+	: >"$probe" 2>/dev/null || return 1
+	chmod 640 "$probe" 2>/dev/null
+	perms="$(ls -l "$probe" 2>/dev/null | cut -c1-10)"
+	rm -f "$probe"
+	[ "$perms" = "-rw-r-----" ]
+}
+
+stage_root="$dist/stage"
+stage_tmp=""
+if ! mode_capable "$dist"; then
+	if stage_tmp="$(mktemp -d 2>/dev/null)" && mode_capable "$stage_tmp"; then
+		stage_root="$stage_tmp"
+		echo "note: $dist cannot store Unix modes; staging in $stage_tmp"
+	else
+		[ -n "$stage_tmp" ] && rm -rf "$stage_tmp"
+		stage_tmp=""
+		echo "WARN: no mode-capable filesystem available; every archive entry" >&2
+		echo "      will carry 0777. Do not publish an artifact built here." >&2
+	fi
+fi
+
+stage="$stage_root/$name"
 
 rm -rf "$dist/stage"
 mkdir -p "$stage"
@@ -93,26 +124,30 @@ make_zip || {
 	exit 1
 }
 
-# Verify the artifact really is a ZIP before publishing it. This is what makes
-# the check portable: it fails loudly on a host whose tar silently produced a
-# uStar archive instead of a ZIP.
-magic="$(od -An -tx1 -N4 "$zip_path" 2>/dev/null | tr -d ' \n')"
-if [ "$magic" != "504b0304" ]; then
-	echo "FAIL: $zip_path is not a ZIP archive (magic bytes: $magic)" >&2
-	exit 1
-fi
-
 echo "built: dist/$name.zip"
 echo "contents:"
 (cd "$stage" && ls -1)
+echo
+
+# Verify the artifact before publishing it. This is what makes the build
+# portable: it fails loudly on a host whose tar silently produced a uStar
+# archive under a .zip name, or whose filesystem could not store Unix modes so
+# the chmod above changed nothing.
+if ! bash "$repo_root/scripts/verify-artifact.sh" "dist/$name.zip"; then
+	echo "FAIL: the archive did not pass verification; not publishing it" >&2
+	[ -n "$stage_tmp" ] && rm -rf "$stage_tmp"
+	rm -f "$zip_path"
+	exit 1
+fi
 
 # Record the hash of the bare file name, as it is published. The entry is
 # checked from inside dist/ because that is where the file actually sits.
 (
 	cd "$dist"
 	sha256sum "$name.zip" | awk -v n="$name.zip" '{print $1 "  " n}' >SHA256SUMS
+	echo
 	cat SHA256SUMS
 )
 
-echo "NOTE: SHA256SUMS describes the artifact this script just produced."
-echo "      Rebuilds on a host with a different zip(1) may differ in bytes."
+[ -n "$stage_tmp" ] && rm -rf "$stage_tmp"
+exit 0
