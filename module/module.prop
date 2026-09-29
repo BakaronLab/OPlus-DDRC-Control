@@ -1,0 +1,6 @@
+id=oplus_ddrc_control
+name=OPlus DDRC Control
+version=v0.1.0-alpha
+versionCode=1
+author=BakaronLab
+description=Runtime override of the OPlus DDRC low-battery voltage policy (GAUGE_TERM_VOLTAGE / GAUGE_SHUTDOWN_VOLTAGE) through the kernel votable debug-force interface. Default BALANCED; FULL_OEM is experimental and opt-in. Writes no partitions, no boot images and no persistent gauge data. Tested only on PKU110 (silicon_1).

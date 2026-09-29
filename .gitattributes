@@ -1,0 +1,9 @@
+# KernelSU / ReSukiSU module scripts must use LF line endings on every platform.
+# Without this, a Windows checkout with core.autocrlf=true would rewrite the
+# module's shell scripts to CRLF and the module would fail to run on device.
+* text=auto eol=lf
+
+# Build artifacts must never be line-endings converted.
+*.zip binary
+*.img binary
+*.ko binary
